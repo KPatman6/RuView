@@ -25,10 +25,10 @@ export const DEFAULTS = {
   wireColor: '#00d878', jointColor: '#ff4060', aura: 0.02,
   field: 0.45, waves: 0.4, ambient: 0.7, reflect: 0.2,
   fov: 50, orbitSpeed: 0.15, grid: true, room: true,
-  scenario: 'auto', cycle: 30, dataSource: 'demo', wsUrl: '',
+  scenario: 'auto', cycle: 30, dataSource: 'ws', wsUrl: '',
 };
 
-export const SETTINGS_VERSION = '6';
+export const SETTINGS_VERSION = '7';
 
 export const PRESETS = {
   foundation: {},
@@ -67,6 +67,7 @@ export const PRESETS = {
 // Scenario descriptions shown below the dropdown
 const SCENARIO_DESCRIPTIONS = {
   auto:              'Auto-cycling through all sensing scenarios.',
+  offline:           'No live sensor connected. Connect an ESP32 CSI node to begin sensing.',
   empty_room:        'Baseline calibration with no human presence in the monitored zone.',
   single_breathing:  'Detecting vital signs through WiFi signal micro-variations.',
   two_walking:       'Tracking multiple people simultaneously via CSI multiplex separation.',
@@ -245,7 +246,7 @@ export class HudController {
       document.getElementById('ws-url-row').style.display = e.target.value === 'ws' ? 'flex' : 'none';
       if (e.target.value === 'ws' && s.wsUrl) obs._connectWS(s.wsUrl);
       else obs._disconnectWS();
-      this.updateSourceBadge(s.dataSource, obs._ws);
+      this.updateSourceBadge(s.dataSource, obs._ws, obs._liveSource);
       this.saveSettings();
     });
     document.getElementById('ws-url-row').style.display = s.dataSource === 'ws' ? 'flex' : 'none';
@@ -359,13 +360,30 @@ export class HudController {
   // Source badge
   // ============================================================
 
-  updateSourceBadge(dataSource, ws) {
+  updateSourceBadge(dataSource, ws, sourceLabel = '') {
+    const badge = document.getElementById('data-source-badge');
     const dot = document.querySelector('#data-source-badge .dot');
     const label = document.getElementById('data-source-label');
-    if (dataSource === 'ws' && ws?.readyState === WebSocket.OPEN) {
-      dot.className = 'dot dot--live'; label.textContent = 'LIVE';
-    } else {
+    if (!badge || !dot || !label) return;
+    const source = String(sourceLabel || '').trim().toLowerCase();
+    const connected = dataSource === 'ws' && ws?.readyState === WebSocket.OPEN;
+    const actual = connected && source && source !== 'offline'
+      && source !== 'demo' && source !== 'simulate' && source !== 'simulated'
+      && !source.endsWith(':offline') && !source.startsWith('synthetic');
+    badge.classList.remove('source--live', 'source--demo', 'source--simulated', 'source--offline');
+    if (dataSource === 'demo') {
       dot.className = 'dot dot--demo'; label.textContent = 'DEMO';
+      badge.classList.add('source--demo');
+    } else if (actual) {
+      dot.className = 'dot dot--live'; label.textContent = 'LIVE';
+      badge.classList.add('source--live');
+    } else if (connected && (source === 'demo' || source === 'simulate' || source === 'simulated'
+      || source.startsWith('synthetic'))) {
+      dot.className = 'dot dot--simulated'; label.textContent = 'SIMULATED';
+      badge.classList.add('source--simulated');
+    } else {
+      dot.className = 'dot dot--offline'; label.textContent = 'NO SENSOR';
+      badge.classList.add('source--offline');
     }
   }
 
@@ -375,6 +393,10 @@ export class HudController {
 
   updateHUD(data, demoData) {
     if (!data) return;
+    if (data._offline) {
+      this._updateUnavailableHUD();
+      return;
+    }
     const vs = data.vital_signs || {};
     const feat = data.features || {};
     const cls = data.classification || {};
@@ -526,6 +548,11 @@ export class HudController {
 
   _updatePersonDots(count) {
     const container = document.getElementById('persons-dots');
+    if (count == null) {
+      if (container) container.innerHTML = '';
+      this._setText('persons-value', '--');
+      return;
+    }
     if (!container) {
       // Fall back to text-only display
       this._setText('persons-value', count);
@@ -541,6 +568,42 @@ export class HudController {
     }
     container.innerHTML = html;
     this._setText('persons-value', count);
+  }
+
+  _updateUnavailableHUD() {
+    this._lerpHr = 0;
+    this._lerpBr = 0;
+    this._lerpConf = 0;
+    for (const id of ['hr-value', 'br-value', 'conf-value']) {
+      this._setText(id, '--');
+      this._setColor(id, 'var(--text-secondary)');
+    }
+    for (const id of ['hr-bar', 'br-bar', 'conf-bar']) {
+      this._setWidth(id, 0);
+      this._setBarColor(id, 'var(--text-secondary)');
+    }
+    this._setText('rssi-value', '--');
+    this._setText('var-value', '--');
+    this._setText('motion-value', '--');
+    this._updatePersonDots(null);
+
+    const presEl = document.getElementById('presence-indicator');
+    const presLabel = document.getElementById('presence-label');
+    if (presEl) presEl.className = 'presence-state presence--offline';
+    if (presLabel) presLabel.textContent = 'NO SENSOR';
+    const fallEl = document.getElementById('fall-alert');
+    if (fallEl) fallEl.style.display = 'none';
+
+    if (this._currentScenarioKey !== 'offline') {
+      this._currentScenarioKey = 'offline';
+      this._updateScenarioDescription('offline');
+      this._updateEdgeModules('offline');
+    }
+    this._rssiHistory = [];
+    if (this._sparklineCtx) {
+      const c = this._sparklineCtx;
+      c.clearRect(0, 0, c.canvas.width, c.canvas.height);
+    }
   }
 
   _updateScenarioDescription(scenarioKey) {

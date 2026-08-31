@@ -1563,10 +1563,9 @@ impl AppStateInner {
 
     fn effective_source(&self) -> String {
         if self.source == "esp32" {
-            if let Some(last) = self.last_esp32_frame {
-                if last.elapsed() > ESP32_OFFLINE_TIMEOUT {
-                    return "esp32:offline".to_string();
-                }
+            match self.last_esp32_frame {
+                Some(last) if last.elapsed() <= ESP32_OFFLINE_TIMEOUT => {}
+                _ => return "esp32:offline".to_string(),
             }
         }
         if self.source.starts_with("realtek") {
@@ -3572,8 +3571,10 @@ mod issue_1004_source_plan_tests {
         let mut src = "simulated".to_string();
         // effective_source() logic for the simulate state: stays "simulated".
         assert_eq!(promote_view(&src, None), "simulated");
-        // First real frame arrives → udp_receiver_task sets source = "esp32".
+        // An explicit ESP32 source with no received frame is offline, never live.
         src = "esp32".to_string();
+        assert_eq!(promote_view(&src, None), "esp32:offline");
+        // First real frame arrives → udp_receiver_task sets source = "esp32".
         let fresh = Some(std::time::Duration::from_millis(10));
         assert_eq!(promote_view(&src, fresh), "esp32", "fresh esp32 frame ⇒ live");
         // After a >5 s gap it reverts to offline (inverse machinery, #1004).
@@ -3585,10 +3586,9 @@ mod issue_1004_source_plan_tests {
     /// promotion/reversion logic is testable without constructing full state.
     fn promote_view(source: &str, last_frame_age: Option<std::time::Duration>) -> String {
         if source == "esp32" {
-            if let Some(age) = last_frame_age {
-                if age > ESP32_OFFLINE_TIMEOUT {
-                    return "esp32:offline".to_string();
-                }
+            match last_frame_age {
+                Some(age) if age <= ESP32_OFFLINE_TIMEOUT => {}
+                _ => return "esp32:offline".to_string(),
             }
         }
         source.to_string()
@@ -3906,7 +3906,15 @@ async fn health(State(state): State<SharedState>) -> Json<serde_json::Value> {
 async fn latest(State(state): State<SharedState>) -> Json<serde_json::Value> {
     let s = state.read().await;
     match &s.latest_update {
-        Some(update) => Json(serde_json::to_value(update).unwrap_or_default()),
+        Some(update) => {
+            // The stored update may be older than the source timeout. Tag the
+            // snapshot with the same freshness-gated source used by /health
+            // and the broadcast tick, so REST clients cannot mistake stale
+            // ESP32 data for a current hardware feed.
+            let mut tagged = update.clone();
+            tagged.source = s.effective_source();
+            Json(serde_json::to_value(tagged).unwrap_or_default())
+        }
         None => Json(serde_json::json!({"status": "no data yet"})),
     }
 }

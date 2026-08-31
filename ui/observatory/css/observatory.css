@@ -100,12 +100,27 @@ body {
   color: var(--green-glow);
 }
 
+#data-source-badge.source--demo,
+#data-source-badge.source--simulated {
+  background: rgba(255, 176, 32, 0.1);
+  border-color: rgba(255, 176, 32, 0.25);
+  color: var(--amber);
+}
+
+#data-source-badge.source--offline {
+  background: rgba(255,255,255,0.04);
+  border-color: rgba(255,255,255,0.14);
+  color: var(--text-secondary);
+}
+
 .dot {
   width: 7px; height: 7px;
   border-radius: 50%;
   display: inline-block;
 }
 .dot--demo { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+.dot--simulated { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+.dot--offline { background: var(--text-secondary); box-shadow: 0 0 6px rgba(255,255,255,0.25); }
 .dot--live { background: var(--green-glow); box-shadow: 0 0 6px var(--green-glow); animation: pulse-dot 2s infinite; }
 
 @keyframes pulse-dot {
@@ -300,6 +315,12 @@ body {
   background: rgba(255,255,255,0.03);
   color: var(--text-label);
   border: 1px solid rgba(255,255,255,0.05);
+}
+
+.presence--offline {
+  background: rgba(255,255,255,0.04);
+  color: var(--text-secondary);
+  border: 1px solid rgba(255,255,255,0.14);
 }
 
 .presence--present {

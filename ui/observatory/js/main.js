@@ -32,6 +32,40 @@ const C = {
   bgDeep:     0x080c14,
 };
 
+// A live connection without a fresh sensing_update is not a sensing result.
+// Keep the scene empty until the backend supplies a real, non-synthetic frame.
+const OFFLINE_FRAME = {
+  type: 'sensing_update',
+  timestamp: 0,
+  source: 'offline',
+  scenario: 'offline',
+  nodes: [],
+  features: {
+    mean_rssi: null, variance: null, std: null, motion_band_power: null,
+    breathing_band_power: null, dominant_freq_hz: null, spectral_power: null,
+  },
+  classification: { motion_level: 'absent', presence: false, confidence: 0 },
+  signal_field: { grid_size: [20, 1, 20], values: new Array(400).fill(0) },
+  vital_signs: {
+    breathing_rate_bpm: null, heart_rate_bpm: null,
+    breathing_confidence: null, heart_rate_confidence: null,
+  },
+  persons: [],
+  estimated_persons: 0,
+  edge_modules: {},
+  _observatory: { subcarrier_iq: [], per_subcarrier_variance: new Array(64).fill(0) },
+  _offline: true,
+};
+
+function isActualSource(source) {
+  const value = String(source || '').trim().toLowerCase();
+  if (!value || value === 'offline' || value === 'demo' || value === 'simulate' || value === 'simulated') {
+    return false;
+  }
+  if (value.endsWith(':offline') || value.startsWith('synthetic')) return false;
+  return true;
+}
+
 // SCENARIO_NAMES, DEFAULTS, SETTINGS_VERSION, PRESETS imported from hud-controller.js
 
 // ---- Main Class ----
@@ -131,6 +165,7 @@ class Observatory {
     // WebSocket for live data — always try auto-detect on startup
     this._ws = null;
     this._liveData = null;
+    this._liveSource = null;
     this._autoDetectLive();
 
     // Input
@@ -437,6 +472,13 @@ class Observatory {
   // ---- WebSocket live data ----
 
   _autoDetectLive() {
+    // Demo is an explicit operator choice. Do not silently replace it with a
+    // detected backend, and do not silently replace live mode with demo.
+    if (this.settings.dataSource === 'demo') {
+      this._hud.updateSourceBadge('demo', null, 'demo');
+      return;
+    }
+
     // Probe sensing server health on same origin, then common ports
     const host = window.location.hostname || 'localhost';
     const candidates = [
@@ -449,7 +491,9 @@ class Observatory {
 
     const tryNext = (i) => {
       if (i >= unique.length) {
-        console.log('[Observatory] No sensing server detected, using demo mode');
+        this._liveSource = null;
+        this._hud.updateSourceBadge(this.settings.dataSource, null, null);
+        console.log('[Observatory] No sensing server detected; waiting for a live source');
         return;
       }
       const base = unique[i];
@@ -463,6 +507,8 @@ class Observatory {
             console.log('[Observatory] Sensing server detected at', base, '→', wsUrl);
             this.settings.dataSource = 'ws';
             this.settings.wsUrl = wsUrl;
+            this._liveSource = data.source || null;
+            this._hud.updateSourceBadge('ws', null, this._liveSource);
             void this._connectWS(wsUrl);
           } else {
             tryNext(i + 1);
@@ -478,26 +524,42 @@ class Observatory {
     this._disconnectWS();
     let wsUrl = url;
     try { wsUrl = await withWsTicket(url); } catch { /* auth off or pre-ADR-272 server */ }
+    if (this.settings.dataSource !== 'ws') return;
     try {
-      this._ws = new WebSocket(wsUrl);
-      this._ws.onopen = () => {
+      const socket = new WebSocket(wsUrl);
+      this._ws = socket;
+      socket.onopen = () => {
+        if (this._ws !== socket) return;
         console.log('[Observatory] WebSocket connected');
-        this._hud.updateSourceBadge('ws', this._ws);
+        this._hud.updateSourceBadge('ws', socket, this._liveSource);
       };
-      this._ws.onmessage = (evt) => { try { this._liveData = JSON.parse(evt.data); } catch {} };
-      this._ws.onclose = () => {
-        console.log('[Observatory] WebSocket closed, falling back to demo');
+      socket.onmessage = (evt) => {
+        try {
+          const next = JSON.parse(evt.data);
+          if (next?.type !== 'sensing_update') return;
+          this._liveData = next;
+          this._liveSource = next.source || null;
+          this._hud.updateSourceBadge('ws', socket, this._liveSource);
+        } catch {}
+      };
+      socket.onclose = () => {
+        if (this._ws !== socket) return;
+        console.log('[Observatory] WebSocket closed; waiting for a live source');
         this._ws = null;
-        this.settings.dataSource = 'demo';
-        this._hud.updateSourceBadge('demo', null);
+        this._liveData = null;
+        this._liveSource = null;
+        this._hud.updateSourceBadge('ws', null, null);
       };
-      this._ws.onerror = () => {};
+      socket.onerror = () => {};
     } catch {}
   }
 
   _disconnectWS() {
-    if (this._ws) { this._ws.close(); this._ws = null; }
+    const socket = this._ws;
+    this._ws = null;
+    if (socket) socket.close();
     this._liveData = null;
+    this._liveSource = null;
   }
 
   // ========================================
@@ -510,10 +572,12 @@ class Observatory {
     const elapsed = this._clock.getElapsedTime();
 
     // Data source
-    if (this.settings.dataSource === 'ws' && this._liveData) {
+    if (this.settings.dataSource === 'ws' && this._liveData && isActualSource(this._liveData.source)) {
       this._currentData = this._liveData;
-    } else {
+    } else if (this.settings.dataSource === 'demo') {
       this._currentData = this._demoData.update(dt);
+    } else {
+      this._currentData = OFFLINE_FRAME;
     }
     const data = this._currentData;
 
