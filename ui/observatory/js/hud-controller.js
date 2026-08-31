@@ -67,7 +67,7 @@ export const PRESETS = {
 // Scenario descriptions shown below the dropdown
 const SCENARIO_DESCRIPTIONS = {
   auto:              'Auto-cycling through all sensing scenarios.',
-  offline:           'No live sensor connected. Connect an ESP32 CSI node to begin sensing.',
+  offline:           'No CSI receiver connected. Your router provides the radio signal, but it does not send CSI to RuView. Connect an ESP32-S3 or ESP32-C6 node to begin sensing.',
   empty_room:        'Baseline calibration with no human presence in the monitored zone.',
   single_breathing:  'Detecting vital signs through WiFi signal micro-variations.',
   two_walking:       'Tracking multiple people simultaneously via CSI multiplex separation.',
